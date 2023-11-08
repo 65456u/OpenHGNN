@@ -119,7 +119,8 @@ SUPPORTED_DATASETS = {
     "recommendation": "openhgnn.dataset.RecommendationDataset",
     "edge_classification": "openhgnn.dataset.EdgeClassificationDataset",
     "hypergraph":"openhgnn.dataset.HypergraphDataset",
-    "pretrain":"openhgnn.dataset.mag_dataset"
+    "pretrain":"openhgnn.dataset.mag_dataset",
+    "ktn":"openhgnn.dataset.oag_dataset"
 }
 
 from .NodeClassificationDataset import NodeClassificationDataset
@@ -157,7 +158,8 @@ CLASS_DATASETS = {
     "ohgbn-alircd_session1": "openhgnn.dataset.AliRCDSession1Dataset",
     "alircd_session2": "openhgnn.dataset.AliRCDSession2Dataset",
     "ohgbn-alircd_session2": "openhgnn.dataset.AliRCDSession2Dataset",
-    "pretrain":"openhgnn.dataset.mag_dataset"
+    "pretrain":"openhgnn.dataset.mag_dataset",
+    "ktn":"openhgnn.dataset.oag_dataset"
 }
 
 __all__ = [
@@ -175,6 +177,7 @@ __all__ = [
     'HypergraphDataset',
     'AbnormEventDetectionDataset',
     'mag_dataset',
+    'OAGDataset',
 ]
 
 classes = __all__
