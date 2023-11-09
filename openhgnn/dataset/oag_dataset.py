@@ -79,5 +79,37 @@ class OAGDataset(BaseDataset):
         self.category = None
         self.num_classes = None
         self.has_feature = True
-        print("Loading dataset", 'oag_cs')
-        print(args)
+        print("Loading dataset", "oag_cs")
+        self.load_graph_from_disk("./openhgnn/dataset/oag_cs.bin")
+        self.meta_paths_dict = {
+            "P-A": [("paper", "paper-author", "author")],
+            "A-P": [("author", "author-paper", "paper")],
+            "V-A": [
+                ("venue", "venue-paper", "paper"),
+                ("paper", "paper-author", "author"),
+            ],
+            "A-V": [
+                ("author", "author-paper", "paper"),
+                ("paper", "paper-venue", "venue"),
+            ],
+        }
+
+    def load_graph_from_disk(self, file_path):
+        glist, dims = dgl.load_graphs(file_path)
+        self.g = glist[0]
+        self.dims = dims
+
+    def get_labels(self, task_type, node_type):
+        assert task_type in ["L1", "L2"]
+        return self.g.ndata[task_type][node_type]
+
+    def get_split(self, node_type):
+        train_mask = self.g.nodes[node_type].data["train_mask"]
+        test_mask = self.g.nodes[node_type].data["test_mask"]
+        train_idx = th.nonzero(train_mask, as_tuple=False).squeeze()
+        test_idx = th.nonzero(test_mask, as_tuple=False).squeeze()
+        valid_idx = train_idx
+        self.train_idx = train_idx
+        self.test_idx = test_idx
+        self.valid_idx = valid_idx
+        return self.train_idx, self.valid_idx, self.test_idx

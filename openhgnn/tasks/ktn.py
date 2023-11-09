@@ -23,14 +23,20 @@ class KTN(BaseTask):
     def get_graph(self):
         return self.dataset.g
 
-    def get_split(self):
-        return self.dataset.get_split()
+    def get_split(self, node_type):
+        return self.dataset.get_split(node_type)
 
     def get_labels(self):
         return self.dataset.g.ndata[self.task_type]
 
-    def get_loss(self, y_pred, y_true):            
+    def get_loss(self, y_pred, y_true):
         return self.classifier.calc_loss(y_pred, y_true)
+
+    def evaluate(self, y_pred, y_true):
+        return self.classifier.calc_acc(y_pred, y_true)
+
+    def get_loss_fn(self):
+        return self.classifier.calc_loss
 
 
 def dcg_at_k(r, k):

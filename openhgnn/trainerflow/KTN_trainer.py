@@ -28,22 +28,36 @@ class KTNTrainer(BaseFlow):
         self.hg = self.task.get_graph().to(self.device)
         self.model = build_model(self.model).build_model_from_args(self.args, self.hg)
         self.model = self.model.to(self.device)
-        self.train_idx, self.val_idx, self.test_idx = self.task.get_split()
         self.source_type = args.source_type
         self.target_type = args.target_type
-        self.labels = self.task.get_labels().to(self.device)
         self.source_type = args.source_type
         self.target_type = args.target_type
         self.dataset = self.task.dataset
-        self.classifier=self.task.classifier
-        self.task_type=args.task_type
+        self.classifier = self.task.classifier
+        self.task_type = args.task_type
+        (
+            self.source_train_idx,
+            self.source_val_idx,
+            self.source_test_idx,
+        ) = self.task.get_split(self.source_type)
+        (
+            self.target_train_idx,
+            self.target_val_idx,
+            self.target_test_idx,
+        ) = self.task.get_split(self.target_type)
+        self.source_labels = self.dataset.get_labels(
+            self.task_type, self.source_type
+        ).to(self.device)
+        self.target_labels = self.dataset.get_labels(
+            self.task_type, self.target_type
+        ).to(self.device)
         matching_w = {}
-        self.label_dim=self.dataset.dims[self.task_type]
+        self.label_dim = self.dataset.dims[self.task_type]
         # get target_type-source_type abbreviation, eg: 'paper' 'author' -> 'P-A'
         abbrev = self.target_type[0].upper() + "-" + self.source_type[0].upper()
         self.matching_path = self.dataset.meta_paths_dict[abbrev]
-        for matching_id, relation in self.matching_path:
-            matching_w[str(matching_id) + relation] = nn.Linear(
+        for matching_id, relation in enumerate(self.matching_path):
+            matching_w[str(matching_id) + relation[1]] = nn.Linear(
                 self.args.out_dim, self.args.out_dim
             )
         self.matching_w = nn.ModuleDict(matching_w)
@@ -69,12 +83,12 @@ class KTNTrainer(BaseFlow):
                     modes = modes + ["test"]
 
     def _full_train_step(self):
-
+        pass
 
     def _mini_train_step(
         self,
     ):
-
+        pass
 
     def get_matching_loss(self, edges, h_S, h_T):
         loss = torch.tensor([0.0], requires_grad=True).to(self.device)

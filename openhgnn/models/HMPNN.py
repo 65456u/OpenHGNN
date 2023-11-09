@@ -10,8 +10,8 @@ from . import BaseModel, register_model
 class HMPNN(BaseModel):
     @classmethod
     def build_model_from_args(cls, args, hg):
-        return super().build_model_from_args(
-            args, args.in_dim, args.hid_dim, args.out_dim, hg.etypes, args.num_layers
+        return HMPNN(
+            args.in_dim, args.hid_dim, args.out_dim, hg.etypes, args.num_layers
         )
 
     def __init__(self, in_dim, hid_dim, out_dim, etypes, num_layers):
@@ -22,11 +22,11 @@ class HMPNN(BaseModel):
         self.etypes = etypes
         self.num_layers = num_layers
         self.layers = nn.ModuleList()
-        self.layers.append(HMPNNLayer(in_dim, hid_dim, activation=F.relu))
+        self.layers.append(HMPNNLayer(in_dim, hid_dim, etypes, activation=F.relu))
         print("initing hmpnn model")
         for i in range(num_layers - 2):
-            self.layers.append(HMPNNLayer(hid_dim, hid_dim, activation=F.relu))
-        self.layers.append(HMPNNLayer(hid_dim, out_dim, activation=None))
+            self.layers.append(HMPNNLayer(hid_dim, hid_dim, etypes, activation=F.relu))
+        self.layers.append(HMPNNLayer(hid_dim, out_dim, etypes,activation=None))
 
     def forward(self, hg, h_dict):
         if hasattr(hg, "ntypes"):
@@ -42,10 +42,11 @@ class HMPNN(BaseModel):
 
 
 class HMPNNLayer(nn.Module):
-    def __init__(self, in_feat, out_feat, activation=None):
-        super(HMPNN, self).__init__()
+    def __init__(self, in_feat, out_feat, etypes, activation=None):
+        super(HMPNNLayer, self).__init__()
         self.in_feat = in_feat
         self.out_feat = out_feat
+        self.etypes = etypes
         self.conv = dglnn.HeteroGraphConv(
             {
                 rel: dglnn.GraphConv(in_feat, out_feat, activation=activation)

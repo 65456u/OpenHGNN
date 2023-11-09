@@ -920,6 +920,15 @@ class Config(object):
             self.test_u_batch_size = conf.getint("lightGCN", "test_u_batch_size")
             self.topks = conf.getint("lightGCN", "topks")
             # self.alpha = conf.getfloat("lightGCN", "alpha")
+            
+        elif self.model_name == 'HMPNN':
+            self.lr=conf.getfloat("HMPNN", "lr")
+            self.max_epoch=conf.getint("HMPNN", "max_epoch")
+            self.batch_size=conf.getint("HMPNN", "batch_size")
+            self.num_layers=conf.getint("HMPNN", "num_layers")
+            self.train_batch=conf.getint("HMPNN", "train_batch")
+            self.test_batch=conf.getint("HMPNN", "test_batch")
+            self.mini_batch_flag=conf.getboolean("HMPNN","mini_batch")
 
         if hasattr(self, 'device'):
             self.device = th.device(self.device)
