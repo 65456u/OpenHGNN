@@ -46,7 +46,7 @@ class KTNTrainer(BaseFlow):
         self.source_type = args.source_type
         self.target_type = args.target_type
         self.dataset = self.task.dataset
-        self.use_matching_loss=args.use_matching_loss
+        self.use_matching_loss = args.use_matching_loss
         self.classifier = self.task.classifier
         self.task_type = args.task_type
         self.mini_batch_flag = args.mini_batch_flag
@@ -72,6 +72,7 @@ class KTNTrainer(BaseFlow):
         self.target_labels = self.dataset.get_labels(
             self.task_type, self.target_type
         ).to(self.device)
+        self.matching_coeff=args.matching_coeff
         matching_w = {}
         self.label_dim = self.dataset.dims[self.task_type]
         # get target_type-source_type abbreviation, eg: 'paper' 'author' -> 'P-A'
@@ -108,6 +109,22 @@ class KTNTrainer(BaseFlow):
                 self.logger.info(
                     "Epoch {:d} | Train Loss {:.4f}".format(epoch, train_loss)
                 )
+                # matching loss
+                h_dict = self.g.ndata["feat"]
+                h_dict = self.model(self.g, h_dict)
+                h_S = h_dict[self.source_type]
+                h_T = h_dict[self.target_type]
+                matching_loss = self.get_matching_loss(h_S, h_T)
+                print(matching_loss)
+                loss = train_loss + self.matching_coeff * matching_loss
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                early_stop = stopper.loss_step(loss, self.model)
+                if early_stop:
+                    self.logger.train_info('Early Stop!\tEpoch:' + str(epoch))
+                    break
+                
 
             else:
                 self.logger.info("Epoch {:d} | full-batch training".format(epoch))
@@ -139,17 +156,7 @@ class KTNTrainer(BaseFlow):
             logits = self.classifier(h[self.source_type])
             loss = self.loss_fn(logits, lbl)
             self.logger.info("loss: {:.4f}".format(loss))
-
-            # matching loss
-            h_S = h[self.source_type]
-            h_T = h[self.target_type]
-            matching_loss = self.get_matching_loss(h_S, h_T)
-            self.logger.info("matching_loss: {:.4f}".format(matching_loss))
-            loss = loss + args.matching_coeff * matching_loss
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            all_loss += loss.item()
+            all_loss += loss
             break
         return all_loss
 
@@ -160,7 +167,9 @@ class KTNTrainer(BaseFlow):
         h_Z = h_T
         for matching_id, edge in enumerate(self.matching_path):
             h_Z = self.matching_w[str(matching_id) + edge[1]](h_Z)
-            h_Z = dglsp.spmm(self.g.adj(etype=edge), h_Z)
+            adj = self.g.adj(etype=edge).transpose()
+            h_Z = dglsp.spmm(adj, h_Z)
+            print(h_Z.shape)
         loss = loss + self.matching_loss(h_S, h_Z)
         return loss
 
