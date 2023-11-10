@@ -34,6 +34,9 @@ class HMPNN(BaseModel):
                 h_dict = layer(hg, h_dict)
         else:
             for layer, block in zip(self.layers, hg):
+                print('layer')
+                print(block)
+                print(layer)
                 h_dict = layer(block, h_dict)
         return h_dict
 
