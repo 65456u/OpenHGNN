@@ -8,7 +8,20 @@ from ..utils import EarlyStopping, to_hetero_idx, to_homo_feature, to_homo_idx
 from ..tasks import build_task
 import warnings
 import torch.nn as nn
+import dgl.sparse as dglsp
 from torch.utils.tensorboard import SummaryWriter
+
+
+def process_category(labels: torch.tensor, num_classes: int) -> torch.tensor:
+    if labels.shape[1] != num_classes:
+        processed_labels = torch.zeros((labels.shape[0], num_classes))
+        num_indices = torch.count_nonzero(labels + 1, dim=1)
+        for i in range(labels.shape[0]):
+            indices = labels[i, : num_indices[i]].to(torch.int)
+            processed_labels[i, indices] = 1 / num_indices[i].clamp(min=1)
+    else:
+        processed_labels = labels
+    return processed_labels
 
 
 @register_flow("KTN_trainer")
@@ -24,7 +37,7 @@ class KTNTrainer(BaseFlow):
         self.args = args
         self.model_name = args.model
         self.device = args.device
-        self.task = build_task(args)
+        # self.task = build_task(args)
         self.hg = self.task.get_graph().to(self.device)
         self.model = build_model(self.model).build_model_from_args(self.args, self.hg)
         self.model = self.model.to(self.device)
@@ -33,13 +46,16 @@ class KTNTrainer(BaseFlow):
         self.source_type = args.source_type
         self.target_type = args.target_type
         self.dataset = self.task.dataset
+        self.use_matching_loss=args.use_matching_loss
         self.classifier = self.task.classifier
         self.task_type = args.task_type
         self.mini_batch_flag = args.mini_batch_flag
         self.num_layers = args.num_layers
-        self.g=self.dataset.g
-        self.batch_size=args.batch_size
-        self.source_lables=self.dataset.get_labels(self.task_type,self.source_type).to(self.device)
+        self.g = self.dataset.g
+        self.batch_size = args.batch_size
+        self.source_lables = self.dataset.get_labels(
+            self.task_type, self.source_type
+        ).to(self.device)
         (
             self.source_train_idx,
             self.source_val_idx,
@@ -69,6 +85,14 @@ class KTNTrainer(BaseFlow):
         for matching_id in self.matching_w.keys():
             nn.init.xavier_uniform_(self.matching_w[matching_id].weight)
         self.matching_loss = nn.MSELoss()
+        self.optimizer = torch.optim.Adam(
+            [
+                {"params": self.model.parameters()},
+                {"params": self.matching_w.parameters()},
+                {"params": self.classifier.parameters()},
+            ],
+            lr=self.args.lr,
+        )
 
     def preprocess(self):
         pass
@@ -81,12 +105,13 @@ class KTNTrainer(BaseFlow):
             if self.args.mini_batch_flag:
                 self.logger.info("Epoch {:d} | mini-batch training".format(epoch))
                 train_loss = self._mini_train_step()
+                self.logger.info(
+                    "Epoch {:d} | Train Loss {:.4f}".format(epoch, train_loss)
+                )
+
             else:
                 self.logger.info("Epoch {:d} | full-batch training".format(epoch))
                 train_loss = self._full_train_step()
-            if epoch % self.evaluate_interval == 0:
-                self.logger.info("Start eval")
-                
 
     def _full_train_step(self):
         pass
@@ -97,27 +122,45 @@ class KTNTrainer(BaseFlow):
         self.model.train()
         self.matching_loss.train()
         self.classifier.train()
-        loader_tqdm=tqdm(self.train_loader,ncols=120)
-        for i, (input_nodes,seeds,blocks) in enumerate(loader_tqdm):
-            h={}
+        loader_tqdm = tqdm(self.train_loader, ncols=120)
+        all_loss = 0
+        for i, (input_nodes, seeds, blocks) in enumerate(loader_tqdm):
+            h = {}
             for ntype in input_nodes.keys():
-               h[ntype]=self.g.ndata['feat'][ntype][input_nodes[ntype]]# .to(self.device)
-            lbl=self.source_labels[seeds[self.source_type]].to(self.device)
-            logits=self.model([block for block in blocks],h)[self.source_type]
-            loss=self.loss_fn(logits,lbl)
-            print(loss)
-            
-            
-        
+                h[ntype] = self.g.ndata["feat"][ntype][
+                    input_nodes[ntype]
+                ]  # .to(self.device)
+            lbl = self.source_labels[seeds[self.source_type]].to(self.device)
 
-    def get_matching_loss(self, edges, h_S, h_T):
+            # normalize labels
+            lbl = process_category(lbl, self.label_dim)
+
+            h = self.model(blocks, h)
+            logits = self.classifier(h[self.source_type])
+            loss = self.loss_fn(logits, lbl)
+            self.logger.info("loss: {:.4f}".format(loss))
+
+            # matching loss
+            h_S = h[self.source_type]
+            h_T = h[self.target_type]
+            matching_loss = self.get_matching_loss(h_S, h_T)
+            self.logger.info("matching_loss: {:.4f}".format(matching_loss))
+            loss = loss + args.matching_coeff * matching_loss
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            all_loss += loss.item()
+            break
+        return all_loss
+
+    def get_matching_loss(self, h_S, h_T):
         loss = torch.tensor([0.0], requires_grad=True).to(self.device)
         if self.use_matching_loss == False:
             return loss
         h_Z = h_T
-        for matching_id, edge in self.matching_path:
-            h_Z = self.matching_w[str(matching_id) + edge](h_Z)
-            h_Z = torch.spmm(g.adj_tensors(etype=edge, fmt="coo"), h_Z)
+        for matching_id, edge in enumerate(self.matching_path):
+            h_Z = self.matching_w[str(matching_id) + edge[1]](h_Z)
+            h_Z = dglsp.spmm(self.g.adj(etype=edge), h_Z)
         loss = loss + self.matching_loss(h_S, h_Z)
         return loss
 
@@ -126,7 +169,7 @@ class KTNTrainer(BaseFlow):
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.num_layers)
             self.train_loader = dgl.dataloading.DataLoader(
                 self.g,
-                {self.source_type:self.source_train_idx},
+                {self.source_type: self.source_train_idx},
                 sampler,
                 batch_size=self.batch_size,
                 shuffle=True,
