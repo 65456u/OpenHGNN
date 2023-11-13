@@ -98,6 +98,16 @@ class KTNTrainer(BaseFlow):
         self.preprocess()
         stopper = EarlyStopping(self.args.patience)
         epoch_iter = tqdm(range(self.max_epoch))
+        if not self.args.mini_batch_flag:
+            self.train_labels = process_category(
+                self.source_labels[self.source_train_idx], self.label_dim
+            )
+            self.source_test_labels = process_category(
+                self.source_labels[self.source_test_idx], self.label_dim
+            )
+            self.target_test_labels = process_category(
+                self.target_labels[self.target_test_idx], self.label_dim
+            )
         for epoch in epoch_iter:
             if self.args.mini_batch_flag:
                 self.logger.info("Epoch {:d} | mini-batch training".format(epoch))
@@ -126,6 +136,10 @@ class KTNTrainer(BaseFlow):
                 self.logger.info(
                     "Epoch {:d} | Train Loss {:.4f}".format(epoch, train_loss)
                 )
+                if epoch % self.evaluate_interval == 0:
+                    self.logger.info("Start evaling")
+                    acc = self._full_test_step()
+                    print(acc)
 
     def _full_train_step(self):
         self.model.train()
@@ -133,11 +147,9 @@ class KTNTrainer(BaseFlow):
         self.classifier.train()
         self.g = self.g.to(self.device)
         h_dict = self.g.ndata["feat"]
-        logits = self.model(self.g, h_dict)[self.source_type]
+        logits = self.model(self.g, h_dict)[self.source_type][self.source_train_idx]
         pred_y = self.classifier(logits)
-        source_labels = self.g.ndata[self.task_type][self.source_type].to(self.device)
-        loss = torch.tensor([0.0], requires_grad=True).to(self.device)
-        loss /= len(pred_y)
+        loss = self.loss_fn(pred_y, self.train_labels)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -196,3 +208,13 @@ class KTNTrainer(BaseFlow):
                 # num_workers=4,
             )
         return
+
+    def _full_test_step(self):
+        self.model.eval()
+        self.classifier.eval()
+        self.matching_w.eval()
+        with torch.no_grad():
+            h_dict = self.g.ndata["feat"]
+            logits = self.model(self.g, h_dict)[self.source_type]
+            pred_y = self.classifier(logits)[self.source_train_idx]
+            return self.task.evaluate(pred_y, self.train_labels)

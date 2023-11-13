@@ -70,5 +70,6 @@ class HMPNNLayer(nn.Module):
         )
 
     def forward(self, g, h_dict):
-        h_dict = self.conv(g, h_dict)
+        with g.local_scope():
+            h_dict = self.conv(g, h_dict)
         return h_dict

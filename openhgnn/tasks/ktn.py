@@ -97,3 +97,4 @@ class Classifier(nn.Module):
             return metrics.f1_score(y_true, y_pred, average="micro"), metrics.f1_score(
                 y_true, y_pred, average="macro"
             )
+            
