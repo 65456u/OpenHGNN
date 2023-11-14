@@ -18,7 +18,10 @@ class KTN(BaseTask):
         self.g = self.dataset.g
         self.args = args
         self.task_type = args.task_type
-        self.classifier = Classifier(args.out_dim, self.dataset.dims[self.task_type])
+        self.ranking = args.ranking
+        self.classifier = Classifier(
+            args.out_dim, self.dataset.dims[self.task_type], self.ranking
+        )
 
     def get_graph(self):
         return self.dataset.g
@@ -97,4 +100,3 @@ class Classifier(nn.Module):
             return metrics.f1_score(y_true, y_pred, average="micro"), metrics.f1_score(
                 y_true, y_pred, average="macro"
             )
-            

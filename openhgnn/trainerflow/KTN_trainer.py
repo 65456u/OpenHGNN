@@ -90,6 +90,7 @@ class KTNTrainer(BaseFlow):
             ],
             lr=self.args.lr,
         )
+        self.writer = SummaryWriter(f"./openhgnn/output/{self.model_name}/")
 
     def preprocess(self):
         pass
@@ -136,10 +137,21 @@ class KTNTrainer(BaseFlow):
                 self.logger.info(
                     "Epoch {:d} | Train Loss {:.4f}".format(epoch, train_loss)
                 )
+                h_dict = self.g.ndata["feat"]
+                h_dict = self.model(self.g, h_dict)
+                h_S = h_dict[self.source_type]
+                h_T = h_dict[self.target_type]
+                matching_loss = self.get_matching_loss(h_S, h_T)
+                print(matching_loss)
+                loss = train_loss + self.matching_coeff * matching_loss
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
                 if epoch % self.evaluate_interval == 0:
                     self.logger.info("Start evaling")
                     acc = self._full_test_step()
                     print(acc)
+                    # use summary writer to record the acc
 
     def _full_train_step(self):
         self.model.train()
@@ -150,10 +162,7 @@ class KTNTrainer(BaseFlow):
         logits = self.model(self.g, h_dict)[self.source_type][self.source_train_idx]
         pred_y = self.classifier(logits)
         loss = self.loss_fn(pred_y, self.train_labels)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        return loss.item()
+        return loss
 
     def _mini_train_step(
         self,
@@ -215,6 +224,16 @@ class KTNTrainer(BaseFlow):
         self.matching_w.eval()
         with torch.no_grad():
             h_dict = self.g.ndata["feat"]
-            logits = self.model(self.g, h_dict)[self.source_type]
-            pred_y = self.classifier(logits)[self.source_train_idx]
-            return self.task.evaluate(pred_y, self.train_labels)
+            logits = self.model(self.g, h_dict)
+            source_y = self.classifier(logits[self.source_type])[self.source_test_idx]
+            origin_target_y = self.classifier(logits[self.target_type])[
+                self.target_test_idx
+            ]
+            ktn_logits = logits[self.target_type]
+            for matching_id, edge in enumerate(self.matching_path):
+                ktn_logits = self.matching_w[str(matching_id) + edge[1]](ktn_logits)
+            ktn_target_y = self.classifier(ktn_logits)[self.target_test_idx]
+            source_acc = self.task.evaluate(source_y, self.source_test_labels)
+            target_acc = self.task.evaluate(origin_target_y, self.target_test_labels)
+            ktn_acc = self.task.evaluate(ktn_target_y, self.target_test_labels)
+            return source_acc, target_acc, ktn_acc
