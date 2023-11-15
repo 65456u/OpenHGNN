@@ -1,7 +1,7 @@
 import dgl
 import torch
 from tqdm import tqdm
-from ..utils.sampler import get_node_data_loader
+from ..utils.sampler import HGTsampler
 from ..models import build_model
 from . import BaseFlow, register_flow
 from ..utils import EarlyStopping, to_hetero_idx, to_homo_feature, to_homo_idx
@@ -93,6 +93,29 @@ class KTNTrainer(BaseFlow):
         self.writer = SummaryWriter(f"./openhgnn/output/{self.model_name}/")
 
     def preprocess(self):
+        if self.mini_batch_flag:
+            self.source_sampler = HGTsampler(
+                self.g,
+                self.source_type,
+                self.args.num_nodes_per_type,
+                self.args.num_steps,
+            )
+            self.target_sampler = HGTsampler(
+                self.g,
+                self.target_type,
+                self.args.num_nodes_per_type,
+                self.args.num_steps,
+            )
+            self.train_loader = dgl.dataloading.DataLoader(
+                self.g,
+                {
+                    self.source_type: self.source_train_idx,
+                    self.target_type: self.target_train_idx,
+                },
+                batch_size=self.batch_size,
+                shuffle=True,
+                drop_last=False,
+            )
         pass
 
     def train(self):
