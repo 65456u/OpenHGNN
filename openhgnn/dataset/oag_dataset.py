@@ -101,7 +101,7 @@ class OAGDataset(BaseDataset):
 
     def get_labels(self, task_type, node_type):
         assert task_type in ["L1", "L2"]
-        return self.g.ndata[task_type][node_type]
+        return self.g.ndata[task_type].pop(node_type)
 
     def get_split(self, node_type):
         train_mask = self.g.nodes[node_type].data["train_mask"]
@@ -113,3 +113,6 @@ class OAGDataset(BaseDataset):
         self.test_idx = test_idx
         self.valid_idx = valid_idx
         return self.train_idx, self.valid_idx, self.test_idx
+
+    def get_feature(self, ):
+        return self.g.ndata.pop('feat')
