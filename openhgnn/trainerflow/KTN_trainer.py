@@ -12,14 +12,20 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 def process_category(labels: torch.tensor, num_classes: int) -> torch.tensor:
+    device = labels.device
+
     if labels.shape[1] != num_classes:
-        processed_labels = torch.zeros((labels.shape[0], num_classes))
-        num_indices = torch.count_nonzero(labels + 1, dim=1)
-        for i in range(labels.shape[0]):
-            indices = labels[i, : num_indices[i]].to(torch.int)
-            processed_labels[i, indices] = 1 / num_indices[i].clamp(min=1)
+        processed_labels = torch.zeros(
+            (labels.shape[0], num_classes), dtype=torch.float, device=device
+        )
+        valid_labels = (labels >= 0).to(device)
+        num_indices = valid_labels.sum(dim=1)
+        weights = (1.0 / num_indices.clamp(min=1).unsqueeze(1)).float().to(device)
+        indices = (labels * valid_labels).to(torch.int64).to(device)
+        processed_labels.scatter_add_(1, indices, weights * valid_labels)
     else:
-        processed_labels = labels
+        processed_labels = labels.float().to(device)
+
     return processed_labels
 
 
@@ -48,12 +54,13 @@ class KTNTrainer(BaseFlow):
         self.source_type = args.source_type
         self.target_type = args.target_type
         self.dataset = self.task.dataset
+        self.dataset.to(self.device)
         self.use_matching_loss = args.use_matching_loss
-        self.classifier = self.task.classifier
+        self.classifier = self.task.classifier.to(self.device)
         self.task_type = args.task_type
         self.mini_batch_flag = args.mini_batch_flag
         self.num_layers = args.num_layers
-        self.g = self.dataset.g
+        self.g = self.dataset.g.to(self.device)
         self.batch_size = args.batch_size
         self.source_train_batch = args.source_train_batch
         self.source_test_batch = args.source_test_batch
@@ -64,24 +71,25 @@ class KTNTrainer(BaseFlow):
             self.source_train_idx,
             self.source_val_idx,
             self.source_test_idx,
-        ) = self.task.get_split(self.source_type)
+        ) = self.task.get_split(self.source_type, self.device)
         (
             self.target_train_idx,
             self.target_val_idx,
             self.target_test_idx,
-        ) = self.task.get_split(self.target_type)
+        ) = self.task.get_split(self.target_type, self.device)
         self.source_labels = self.dataset.get_labels(self.task_type, self.source_type)
         self.target_labels = self.dataset.get_labels(self.task_type, self.target_type)
         self.matching_coeff = args.matching_coeff
         matching_w = {}
-        self.label_dim = self.dataset.dims[self.task_type]
+        self.label_dim = self.dataset.dims[self.task_type].item()
+        print(self.label_dim)
         # get target_type-source_type abbreviation, eg: 'paper' 'author' -> 'P-A'
         abbrev = self.target_type[0].upper() + "-" + self.source_type[0].upper()
         self.matching_path = self.dataset.meta_paths_dict[abbrev]
         for matching_id, relation in enumerate(self.matching_path):
             matching_w[str(matching_id) + relation[1]] = nn.Linear(
                 self.args.out_dim, self.args.out_dim
-            )
+            ).to(self.device)
         self.matching_w = nn.ModuleDict(matching_w)
         for matching_id in self.matching_w.keys():
             nn.init.xavier_uniform_(self.matching_w[matching_id].weight)
@@ -107,9 +115,6 @@ class KTNTrainer(BaseFlow):
                 print(train_loss)
                 print(matching_loss)
                 loss = train_loss + self.matching_coeff * matching_loss
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
                 early_stop = stopper.loss_step(loss, self.model)
                 if epoch % self.evaluate_interval == 0:
                     acc = self._mini_test_step()
@@ -157,39 +162,35 @@ class KTNTrainer(BaseFlow):
         self.matching_w.train()
         self.classifier.train()
         # loader_tqdm = tqdm(self.source_train_loader, ncols=120)
+        batch_count = len(self.source_train_loader)
+        if batch_count > self.source_train_batch:
+            batch_count = self.source_train_batch
         loader_tqdm = self.source_train_loader
-        loss = 0
-        matching_loss = 0
+        all_loss = 0.0
+        all_matching_loss = 0.0
         for i, (input_nodes, seeds, blocks) in enumerate(loader_tqdm):
-            # if i == self.source_train_batch:
-            #     break
-            # h = {}
-            # # for ntype in input_nodes.keys():
-            # #     h[ntype] = self.feature[ntype][input_nodes[ntype]]
-            # lbl = self.source_labels[input_nodes[self.source_type]]
-            # lbl = process_category(lbl, self.label_dim)
-            # h = self.model(blocks[0], h)
-            # logits = self.classifier(h[self.source_type])
-            # loss += self.loss_fn(logits, lbl)
-            # h_S = h[self.source_type]
-            # h_T = h[self.target_type]
-            # matching_loss += self.get_matching_loss(h_S, h_T, blocks[0])
             if i == self.source_train_batch:
                 break
-            sg = dgl.node_subgraph(self.g, input_nodes)
+            sg = dgl.node_subgraph(self.g, input_nodes).to(self.device)
             h = {}
             for ntype in input_nodes.keys():
-                h[ntype] = self.feature[ntype][input_nodes[ntype]]
-            lbl = self.source_labels[input_nodes[self.source_type]]
-            lbl = process_category(lbl, self.label_dim)
+                h[ntype] = self.feature[ntype][input_nodes[ntype]].to(self.device)
+            lbl = self.source_labels[input_nodes[self.source_type]].to(self.device)
+            lbl = process_category(lbl, self.label_dim).to(self.device)
             h = self.model(sg, h)
             logits = self.classifier(h[self.source_type])
-            loss += self.loss_fn(logits, lbl)
+            loss = self.loss_fn(logits, lbl)
             h_S = h[self.source_type]
             h_T = h[self.target_type]
-            matching_loss += self.get_matching_loss(h_S, h_T, sg)
-        loss = loss / self.source_train_batch
-        matching_loss = matching_loss / self.source_train_batch
+            matching_loss = self.get_matching_loss(h_S, h_T, sg)
+            all_loss += loss.item()
+            all_matching_loss += loss.item()
+            loss = loss + self.matching_coeff * matching_loss
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+        loss = loss / batch_count
+        matching_loss = matching_loss / batch_count
         return loss, matching_loss
 
     def get_matching_loss(self, h_S, h_T, hg):
@@ -268,25 +269,33 @@ class KTNTrainer(BaseFlow):
         self.classifier.eval()
         self.matching_w.eval()
         with torch.no_grad():
-            source_loader_tqdm = tqdm(self.source_test_loader, ncols=120)
+            # source_loader_tqdm = tqdm(self.source_test_loader, ncols=120)
+            source_loader_tqdm = self.source_test_loader
             source_ndcg = 0
             source_mrr = 0
+            source_batch_count = len(self.source_test_loader)
+            if source_batch_count > self.source_test_batch:
+                source_batch_count = self.source_test_batch
             for i, (input_nodes, seeds, blocks) in enumerate(source_loader_tqdm):
                 if i == self.source_test_batch:
                     break
                 h = {}
                 for ntype in input_nodes.keys():
                     h[ntype] = self.feature[ntype][input_nodes[ntype]].to(self.device)
-                lbl = self.source_labels[seeds[self.source_type]]
-                lbl = process_category(lbl, self.label_dim)
+                lbl = self.source_labels[seeds[self.source_type]].to(self.device)
+                lbl = process_category(lbl, self.label_dim).to(self.device)
                 h = self.model(blocks, h)
                 logits = self.classifier(h[self.source_type])
                 acc = self.task.evaluate(logits, lbl)
                 source_ndcg += acc[0]
                 source_mrr += acc[1]
-            source_ndcg = source_ndcg / self.source_test_batch
-            source_mrr = source_mrr / self.source_test_batch
-            target_loader_tqdm = tqdm(self.target_test_loader, ncols=120)
+            source_ndcg = source_ndcg / source_batch_count
+            source_mrr = source_mrr / source_batch_count
+            # target_loader_tqdm = tqdm(self.target_test_loader, ncols=120)
+            target_batch_count = len(self.target_test_loader)
+            if target_batch_count > self.target_test_batch:
+                target_batch_count = self.target_test_batch
+            target_loader_tqdm = self.target_test_loader
             target_ndcg = 0
             target_mrr = 0
             ktn_ndcg = 0
@@ -296,10 +305,8 @@ class KTNTrainer(BaseFlow):
                     break
                 h = {}
                 for ntype in input_nodes.keys():
-                    h[ntype] = self.g.ndata["feat"][ntype][input_nodes[ntype]].to(
-                        self.device
-                    )
-                lbl = self.target_labels[seeds[self.target_type]]
+                    h[ntype] = self.feature[ntype][input_nodes[ntype]].to(self.device)
+                lbl = self.target_labels[seeds[self.target_type]].to(self.device)
                 lbl = process_category(lbl, self.label_dim)
                 h = self.model(blocks, h)
                 logits = self.classifier(h[self.target_type])
@@ -313,10 +320,10 @@ class KTNTrainer(BaseFlow):
                 ktn_acc = self.task.evaluate(ktn_logits, lbl)
                 ktn_ndcg += ktn_acc[0]
                 ktn_mrr += ktn_acc[1]
-            target_ndcg = target_ndcg / self.target_test_batch
-            target_mrr = target_mrr / self.target_test_batch
-            ktn_ndcg = ktn_ndcg / self.target_test_batch
-            ktn_mrr = ktn_mrr / self.target_test_batch
+            target_ndcg = target_ndcg / target_batch_count
+            target_mrr = target_mrr / target_batch_count
+            ktn_ndcg = ktn_ndcg / target_batch_count
+            ktn_mrr = ktn_mrr / target_batch_count
             return (
                 source_ndcg,
                 source_mrr,

@@ -103,16 +103,22 @@ class OAGDataset(BaseDataset):
         assert task_type in ["L1", "L2"]
         return self.g.ndata[task_type].pop(node_type)
 
-    def get_split(self, node_type):
+    def get_split(self, node_type, device="cpu"):
         train_mask = self.g.nodes[node_type].data["train_mask"]
         test_mask = self.g.nodes[node_type].data["test_mask"]
         train_idx = th.nonzero(train_mask, as_tuple=False).squeeze()
         test_idx = th.nonzero(test_mask, as_tuple=False).squeeze()
         valid_idx = train_idx
-        self.train_idx = train_idx
-        self.test_idx = test_idx
-        self.valid_idx = valid_idx
+        self.train_idx = train_idx.to(device)
+        self.test_idx = test_idx.to(device)
+        self.valid_idx = valid_idx.to(device)
         return self.train_idx, self.valid_idx, self.test_idx
 
-    def get_feature(self, ):
-        return self.g.ndata.pop('feat')
+    def get_feature(
+        self,
+    ):
+        return self.g.ndata.pop("feat")
+
+    def to(self, device):
+        self.g = self.g.to(device)
+        return self

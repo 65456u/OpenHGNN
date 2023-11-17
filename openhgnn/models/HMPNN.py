@@ -27,12 +27,18 @@ class HMPNN(BaseModel):
         self.etypes = etypes
         self.num_layers = num_layers
         self.layers = nn.ModuleList()
-        self.layers.append(HMPNNLayer(in_dim, hid_dim, etypes, activation=F.relu))
         self.device = device
         print("initing hmpnn model")
+        self.layers.append(HMPNNLayer(in_dim, hid_dim, etypes, activation=F.relu)).to(
+            self.device
+        )
         for i in range(num_layers - 2):
-            self.layers.append(HMPNNLayer(hid_dim, hid_dim, etypes, activation=F.relu))
-        self.layers.append(HMPNNLayer(hid_dim, out_dim, etypes, activation=None))
+            self.layers.append(
+                HMPNNLayer(hid_dim, hid_dim, etypes, activation=F.relu)
+            ).to(self.device)
+        self.layers.append(HMPNNLayer(hid_dim, out_dim, etypes, activation=None)).to(
+            self.device
+        )
 
     def forward(self, hg, h_dict):
         if hasattr(hg, "ntypes"):
@@ -41,9 +47,6 @@ class HMPNN(BaseModel):
         else:
             for layer, block in zip(self.layers, hg):
                 block = block.to(self.device)
-                # transfer h_dict to gpu
-                for key in h_dict.keys():
-                    h_dict[key] = h_dict[key].to(self.device)
                 h_dict = layer(block, h_dict)
         return h_dict
 

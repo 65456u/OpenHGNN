@@ -26,8 +26,8 @@ class KTN(BaseTask):
     def get_graph(self):
         return self.dataset.g
 
-    def get_split(self, node_type):
-        return self.dataset.get_split(node_type)
+    def get_split(self, node_type, device="cpu"):
+        return self.dataset.get_split(node_type, device=device)
 
     def get_labels(self):
         return self.dataset.g.ndata[self.task_type]
@@ -87,6 +87,8 @@ class Classifier(nn.Module):
         if self.ranking:
             test_res = []
             test_ndcg = []
+            y_true = y_true.cpu()
+            y_pred = y_pred.cpu()
             for ai, bi in zip(y_true, torch.argsort(y_pred, dim=-1, descending=True)):
                 resi = ai[bi].cpu().numpy()
                 test_res += [resi]
