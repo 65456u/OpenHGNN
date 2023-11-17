@@ -1,7 +1,6 @@
 import dgl
 import torch
 from tqdm import tqdm
-from ..utils.sampler import HGTsampler
 from ..models import build_model
 from . import BaseFlow, register_flow
 from ..utils import EarlyStopping, to_hetero_idx, to_homo_feature, to_homo_idx
@@ -56,6 +55,10 @@ class KTNTrainer(BaseFlow):
         self.num_layers = args.num_layers
         self.g = self.dataset.g
         self.batch_size = args.batch_size
+        self.source_train_batch = args.source_train_batch
+        self.target_train_batch = args.target_train_batch
+        self.source_test_batch = args.source_test_batch
+        self.target_test_batch = args.target_test_batch
         (
             self.source_train_idx,
             self.source_val_idx,
@@ -92,46 +95,10 @@ class KTNTrainer(BaseFlow):
         )
         self.writer = SummaryWriter(f"./openhgnn/output/{self.model_name}/")
 
-    def preprocess(self):
-        if self.mini_batch_flag:
-            self.source_sampler = HGTsampler(
-                self.g,
-                self.source_type,
-                self.args.num_nodes_per_type,
-                self.args.num_steps,
-            )
-            self.target_sampler = HGTsampler(
-                self.g,
-                self.target_type,
-                self.args.num_nodes_per_type,
-                self.args.num_steps,
-            )
-            self.train_loader = dgl.dataloading.DataLoader(
-                self.g,
-                {
-                    self.source_type: self.source_train_idx,
-                    self.target_type: self.target_train_idx,
-                },
-                batch_size=self.batch_size,
-                shuffle=True,
-                drop_last=False,
-            )
-        pass
-
     def train(self):
         self.preprocess()
         stopper = EarlyStopping(self.args.patience)
         epoch_iter = tqdm(range(self.max_epoch))
-        if not self.args.mini_batch_flag:
-            self.train_labels = process_category(
-                self.source_labels[self.source_train_idx], self.label_dim
-            )
-            self.source_test_labels = process_category(
-                self.source_labels[self.source_test_idx], self.label_dim
-            )
-            self.target_test_labels = process_category(
-                self.target_labels[self.target_test_idx], self.label_dim
-            )
         for epoch in epoch_iter:
             if self.args.mini_batch_flag:
                 self.logger.info("Epoch {:d} | mini-batch training".format(epoch))
@@ -140,7 +107,7 @@ class KTNTrainer(BaseFlow):
                     "Epoch {:d} | Train Loss {:.4f}".format(epoch, train_loss)
                 )
                 # matching loss
-                h_dict = self.g.ndata["feat"].to(self.device)
+                h_dict = self.g.ndata["feat"]
                 h_dict = self.model(self.g, h_dict)
                 h_S = h_dict[self.source_type]
                 h_T = h_dict[self.target_type]
@@ -193,26 +160,24 @@ class KTNTrainer(BaseFlow):
         self.model.train()
         self.matching_w.train()
         self.classifier.train()
-        loader_tqdm = tqdm(self.train_loader, ncols=120)
+        # loader_tqdm = tqdm(self.source_train_loader, ncols=120)
+        loader_tqdm = self.source_train_loader
         all_loss = 0
         for i, (input_nodes, seeds, blocks) in enumerate(loader_tqdm):
+            if i == self.source_train_batch:
+                break
             h = {}
             for ntype in input_nodes.keys():
                 h[ntype] = self.g.ndata["feat"][ntype][input_nodes[ntype]].to(
                     self.device
                 )
             lbl = self.source_labels[seeds[self.source_type]]
-            # normalize labels
             lbl = process_category(lbl, self.label_dim)
-            print(lbl.device)
-            print("Current allocated memory:", torch.cuda.memory_allocated())
             h = self.model(blocks, h)
             logits = self.classifier(h[self.source_type])
             loss = self.loss_fn(logits, lbl)
-            self.logger.info("loss: {:.4f}".format(loss))
             all_loss += loss
-            break
-        return all_loss
+        return all_loss / self.source_train_batch
 
     def get_matching_loss(self, h_S, h_T):
         loss = torch.tensor([0.0], requires_grad=True).to(self.device)
@@ -229,15 +194,48 @@ class KTNTrainer(BaseFlow):
 
     def preprocess(self):
         if self.args.mini_batch_flag:
-            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.num_layers)
-            self.train_loader = dgl.dataloading.DataLoader(
+            sampler = dgl.dataloading.NeighborSampler(self.num_layers * [1])
+            self.source_train_loader = dgl.dataloading.DataLoader(
                 self.g,
                 {self.source_type: self.source_train_idx},
                 sampler,
                 batch_size=self.batch_size,
                 shuffle=True,
                 drop_last=False,
-                # num_workers=4,
+            )
+            self.source_test_loader = dgl.dataloading.DataLoader(
+                self.g,
+                {self.source_type: self.source_test_idx},
+                sampler,
+                batch_size=self.batch_size,
+                shuffle=True,
+                drop_last=False,
+            )
+            self.target_train_loader = dgl.dataloading.DataLoader(
+                self.g,
+                {self.target_type: self.target_train_idx},
+                sampler,
+                batch_size=self.batch_size,
+                shuffle=True,
+                drop_last=False,
+            )
+            self.target_test_loader = dgl.dataloading.DataLoader(
+                self.g,
+                {self.target_type: self.target_test_idx},
+                sampler,
+                batch_size=self.batch_size,
+                shuffle=True,
+                drop_last=False,
+            )
+        else:
+            self.train_labels = process_category(
+                self.source_labels[self.source_train_idx], self.label_dim
+            )
+            self.source_test_labels = process_category(
+                self.source_labels[self.source_test_idx], self.label_dim
+            )
+            self.target_test_labels = process_category(
+                self.target_labels[self.target_test_idx], self.label_dim
             )
         return
 
@@ -260,3 +258,68 @@ class KTNTrainer(BaseFlow):
             target_acc = self.task.evaluate(origin_target_y, self.target_test_labels)
             ktn_acc = self.task.evaluate(ktn_target_y, self.target_test_labels)
             return source_acc, target_acc, ktn_acc
+
+    def _mini_test_step(self):
+        self.model.eval()
+        self.classifier.eval()
+        self.matching_w.eval()
+        with torch.no_grad():
+            source_loader_tqdm = tqdm(self.source_test_loader, ncols=120)
+            source_ndcg = 0
+            source_mrr = 0
+            for i, (input_nodes, seeds, blocks) in enumerate(source_loader_tqdm):
+                if i == self.source_test_batch:
+                    break
+                h = {}
+                for ntype in input_nodes.keys():
+                    h[ntype] = self.g.ndata["feat"][ntype][input_nodes[ntype]].to(
+                        self.device
+                    )
+                lbl = self.source_labels[seeds[self.source_type]]
+                lbl = process_category(lbl, self.label_dim)
+                h = self.model(blocks, h)
+                logits = self.classifier(h[self.source_type])
+                acc = self.task.evaluate(logits, lbl)
+                source_ndcg += acc[0]
+                source_mrr += acc[1]
+            source_ndcg = source_ndcg / self.source_test_batch
+            source_mrr = source_mrr / self.source_test_batch
+            target_loader_tqdm = tqdm(self.target_test_loader, ncols=120)
+            target_ndcg = 0
+            target_mrr = 0
+            ktn_ndcg = 0
+            ktn_mrr = 0
+            for i, (input_nodes, seeds, blocks) in enumerate(target_loader_tqdm):
+                if i == self.target_test_batch:
+                    break
+                h = {}
+                for ntype in input_nodes.keys():
+                    h[ntype] = self.g.ndata["feat"][ntype][input_nodes[ntype]].to(
+                        self.device
+                    )
+                lbl = self.target_labels[seeds[self.target_type]]
+                lbl = process_category(lbl, self.label_dim)
+                h = self.model(blocks, h)
+                logits = self.classifier(h[self.target_type])
+                origin_acc = self.task.evaluate(logits, lbl)
+                target_ndcg += origin_acc[0]
+                target_mrr += origin_acc[1]
+                target_h = h[self.target_type]
+                for matching_id, edge in enumerate(self.matching_path):
+                    target_h = self.matching_w[str(matching_id) + edge[1]](target_h)
+                ktn_logits = self.classifier(target_h)
+                ktn_acc = self.task.evaluate(ktn_logits, lbl)
+                ktn_ndcg += ktn_acc[0]
+                ktn_mrr += ktn_acc[1]
+            target_ndcg = target_ndcg / self.target_test_batch
+            target_mrr = target_mrr / self.target_test_batch
+            ktn_ndcg = ktn_ndcg / self.target_test_batch
+            ktn_mrr = ktn_mrr / self.target_test_batch
+            return (
+                source_ndcg,
+                source_mrr,
+                target_ndcg,
+                target_mrr,
+                ktn_ndcg,
+                ktn_mrr,
+            )
