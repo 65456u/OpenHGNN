@@ -42,23 +42,30 @@ class KTN(BaseTask):
         return self.classifier.calc_loss
 
 
-def dcg_at_k(r, k):
-    r = np.asfarray(r)[:k]
-    if r.size:
-        return r[0] + np.sum(r[1:] / np.log2(np.arange(2, r.size + 1)))
-    return 0.0
+def _mrr(indices, true_labels):
+    if true_labels.dim() == 1:
+        true_labels = true_labels.unsqueeze(0)
+    true_indices = true_labels.argmax(dim=1, keepdim=True)
+    ranks = (indices == true_indices).nonzero(as_tuple=True)[1] + 1
+    reciprocal_ranks = 1.0 / ranks.float()
+    has_relevant = (true_labels.max(dim=1).values == 0).nonzero(as_tuple=True)[0]
+    reciprocal_ranks[has_relevant] = 0
+    mrr = reciprocal_ranks.mean()
+    return mrr.item()
 
 
-def ndcg_at_k(r, k):
-    dcg_max = dcg_at_k(sorted(r, reverse=True), k)
-    if not dcg_max:
-        return 0.0
-    return dcg_at_k(r, k) / dcg_max
+def _ndcg(indices, true_relevance):
+    k = true_relevance.shape[1]
+    sorted_true_relevance = torch.gather(true_relevance, 1, indices)
+    discounts = torch.log2(torch.arange(k, device=true_relevance.device).float() + 2.0)
+    dcg = (sorted_true_relevance[:, :k] / discounts).sum(dim=1)
+    true_indices = true_relevance.argsort(descending=True, dim=1)
+    ideal_sorted_relevance = torch.gather(true_relevance, 1, true_indices)
+    idcg = (ideal_sorted_relevance[:, :k] / discounts).sum(dim=1)
+    idcg[idcg == 0] = 1
+    ndcg = dcg / idcg
 
-
-def mean_reciprocal_rank(rs):
-    rs = (np.asarray(r).nonzero()[0] for r in rs)
-    return [1.0 / (r[0] + 1) if r.size else 0.0 for r in rs]
+    return ndcg.mean().item()
 
 
 class Classifier(nn.Module):
@@ -85,17 +92,10 @@ class Classifier(nn.Module):
 
     def calc_acc(self, y_pred, y_true):
         if self.ranking:
-            test_res = []
-            test_ndcg = []
-            y_true = y_true.cpu()
-            y_pred = y_pred.cpu()
-            for ai, bi in zip(y_true, torch.argsort(y_pred, dim=-1, descending=True)):
-                resi = ai[bi].cpu().numpy()
-                test_res += [resi]
-                test_ndcg += [ndcg_at_k(resi, len(resi))]
-            test_ndcg = np.average(test_ndcg)
-            test_mrr = np.average(mean_reciprocal_rank(test_res))
-            return test_ndcg, test_mrr
+            indices = y_pred.argsort(descending=True, dim=1)
+            mrr = _mrr(indices, y_true)
+            ndcg = _ndcg(indices, y_true)
+            return ndcg, mrr
         else:
             y_pred = torch.argmax(y_pred, dim=1).cpu()
             y_true = torch.argmax(y_true, dim=1).cpu()

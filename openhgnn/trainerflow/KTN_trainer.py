@@ -110,50 +110,49 @@ class KTNTrainer(BaseFlow):
         epoch_iter = tqdm(range(self.max_epoch))
         for epoch in epoch_iter:
             if self.args.mini_batch_flag:
-                self.logger.info("Epoch {:d} | mini-batch training".format(epoch))
                 train_loss, matching_loss = self._mini_train_step()
-                print(train_loss)
-                print(matching_loss)
-                loss = train_loss + self.matching_coeff * matching_loss
-                early_stop = stopper.loss_step(loss, self.model)
-                if epoch % self.evaluate_interval == 0:
+            else:
+                train_loss, matching_loss = self._full_train_step()
+            loss = train_loss + self.matching_coeff * matching_loss
+            if epoch % self.evaluate_interval == 0:
+                if self.mini_batch_flag:
                     acc = self._mini_test_step()
-                    print(acc)
+                else:
+                    acc = self._full_test_step()
+                self.writer.add_scalar("source_ndcg", acc[0], epoch)
+                self.writer.add_scalar("source_mrr", acc[1], epoch)
+                self.writer.add_scalar("target_ndcg", acc[2], epoch)
+                self.writer.add_scalar("target_mrr", acc[3], epoch)
+                self.writer.add_scalar("ktn_ndcg", acc[4], epoch)
+                self.writer.add_scalar("ktn_mrr", acc[5], epoch)
+                self.logger.train_info(
+                    f"Epoch {epoch} | Train Loss {train_loss} | Matching Loss {matching_loss} | Source NDCG {acc[0]:.4f} | Source MRR {acc[1]:.4f} | Target NDCG {acc[2]:.4f} | Target MRR {acc[3]:.4f} | KTN NDCG {acc[4]:.4f} | KTN MRR {acc[5]:.4f}"
+                )
+                early_stop = stopper.loss_step(loss, self.model)
                 if early_stop:
                     self.logger.train_info("Early Stop!\tEpoch:" + str(epoch))
                     break
-            else:
-                self.logger.info("Epoch {:d} | full-batch training".format(epoch))
-                train_loss = self._full_train_step()
-                self.logger.info(
-                    "Epoch {:d} | Train Loss {:.4f}".format(epoch, train_loss)
-                )
-                h_dict = self.feature
-                h_dict = self.model(self.g, h_dict)
-                h_S = h_dict[self.source_type]
-                h_T = h_dict[self.target_type]
-                matching_loss = self.get_matching_loss(h_S, h_T, self.g)
-                print(matching_loss)
-                loss = train_loss + self.matching_coeff * matching_loss
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                if epoch % self.evaluate_interval == 0:
-                    self.logger.info("Start evaling")
-                    acc = self._full_test_step()
-                    print(acc)
-                    # use summary writer to record the acc
+        stopper.load_model(self.model)
+        self.writer.close()
 
     def _full_train_step(self):
         self.model.train()
         self.matching_w.train()
         self.classifier.train()
         self.g = self.g.to(self.device)
-        h_dict = self.g.ndata["feat"]
-        logits = self.model(self.g, h_dict)[self.source_type][self.source_train_idx]
+        h_dict = self.feature
+        h_dict = self.model(self.g, h_dict)
+        logits = h_dict[self.source_type][self.source_train_idx]
         pred_y = self.classifier(logits)
-        loss = self.loss_fn(pred_y, self.train_labels)
-        return loss
+        training_loss = self.loss_fn(pred_y, self.train_labels)
+        h_S = h_dict[self.source_type]
+        h_T = h_dict[self.target_type]
+        matching_loss = self.get_matching_loss(h_S, h_T, self.g)
+        loss = training_loss + self.matching_coeff * matching_loss
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        return loss.item(), matching_loss.item()
 
     def _mini_train_step(
         self,
@@ -161,11 +160,11 @@ class KTNTrainer(BaseFlow):
         self.model.train()
         self.matching_w.train()
         self.classifier.train()
-        # loader_tqdm = tqdm(self.source_train_loader, ncols=120)
+        loader_tqdm = tqdm(self.source_train_loader, ncols=120)
         batch_count = len(self.source_train_loader)
         if batch_count > self.source_train_batch:
             batch_count = self.source_train_batch
-        loader_tqdm = self.source_train_loader
+        # loader_tqdm = self.source_train_loader
         all_loss = 0.0
         all_matching_loss = 0.0
         for i, (input_nodes, seeds, blocks) in enumerate(loader_tqdm):
@@ -189,9 +188,9 @@ class KTNTrainer(BaseFlow):
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-        loss = loss / batch_count
-        matching_loss = matching_loss / batch_count
-        return loss, matching_loss
+        all_loss = all_loss / batch_count
+        all_matching_loss = all_matching_loss / batch_count
+        return all_loss, all_matching_loss
 
     def get_matching_loss(self, h_S, h_T, hg):
         loss = torch.tensor([0.0], requires_grad=True).to(self.device)
@@ -249,7 +248,7 @@ class KTNTrainer(BaseFlow):
         self.classifier.eval()
         self.matching_w.eval()
         with torch.no_grad():
-            h_dict = self.g.ndata["feat"]
+            h_dict = self.feature
             logits = self.model(self.g, h_dict)
             source_y = self.classifier(logits[self.source_type])[self.source_test_idx]
             origin_target_y = self.classifier(logits[self.target_type])[
@@ -262,15 +261,15 @@ class KTNTrainer(BaseFlow):
             source_acc = self.task.evaluate(source_y, self.source_test_labels)
             target_acc = self.task.evaluate(origin_target_y, self.target_test_labels)
             ktn_acc = self.task.evaluate(ktn_target_y, self.target_test_labels)
-            return source_acc, target_acc, ktn_acc
+            return source_acc + target_acc + ktn_acc
 
     def _mini_test_step(self):
         self.model.eval()
         self.classifier.eval()
         self.matching_w.eval()
         with torch.no_grad():
-            # source_loader_tqdm = tqdm(self.source_test_loader, ncols=120)
-            source_loader_tqdm = self.source_test_loader
+            source_loader_tqdm = tqdm(self.source_test_loader, ncols=120)
+            # source_loader_tqdm = self.source_test_loader
             source_ndcg = 0
             source_mrr = 0
             source_batch_count = len(self.source_test_loader)
@@ -291,11 +290,11 @@ class KTNTrainer(BaseFlow):
                 source_mrr += acc[1]
             source_ndcg = source_ndcg / source_batch_count
             source_mrr = source_mrr / source_batch_count
-            # target_loader_tqdm = tqdm(self.target_test_loader, ncols=120)
+            target_loader_tqdm = tqdm(self.target_test_loader, ncols=120)
             target_batch_count = len(self.target_test_loader)
             if target_batch_count > self.target_test_batch:
                 target_batch_count = self.target_test_batch
-            target_loader_tqdm = self.target_test_loader
+            # target_loader_tqdm = self.target_test_loader
             target_ndcg = 0
             target_mrr = 0
             ktn_ndcg = 0
