@@ -8,12 +8,30 @@ from . import BaseModel, register_model
 
 @register_model("HMPNN")
 class HMPNN(BaseModel):
+    r"""
+    Heterogeneous Message-Passing Neural Network (HMPNN)
+    A simple implementation of HMPNN from paper for experimenting in KTN.
+    Parameters
+    ----------
+    in_dim : int
+        Input feature size.
+    hid_dim : int
+        Hidden layer size.
+    out_dim : int
+        Output feature size.
+    etypes : list
+        Edge types.
+    num_layers : int
+        Number of layers.
+    device : str
+        Device to run the model.
+    """
     @classmethod
     def build_model_from_args(cls, args, hg):
         return HMPNN(
             args.in_dim,
             args.hid_dim,
-            args.out_dim,
+            args.hid_dim,
             hg.etypes,
             args.num_layers,
             args.device,

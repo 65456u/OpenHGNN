@@ -31,24 +31,64 @@ def process_category(labels: torch.tensor, num_classes: int) -> torch.tensor:
 
 @register_flow("KTN_trainer")
 class KTNTrainer(BaseFlow):
-    """KTNtrainer flows.
-    Supported Model: HMPNN
-    Supported Dataset: oag_cs
-
+    r"""
+    Knowledge Transfer Network (KTN) flow for node classification.
+    <https://arxiv.org/abs/2203.02018>`__
+    The flow is to transfer knowledge from source node type to target node type.
+    Knowledge Transfer Network (KTN) is a zero-shot transfer learning module for heterogeneous graph neural networks (HGNNs).
+    It addresses the challenge of label imbalance in industrial heterogeneous graph (HG) datasets, where labels are abundant for some node types but entirely missing for others.
+    KTN enables knowledge transfer from label-rich to zero-labeled node types within the HG by utilizing the rich relational information available in the graph.
+    KTN operates by transforming the target node type embeddings to align with the source domain distribution.
+    During training, it minimizes both a classification loss and a transfer loss.
+    The transfer loss is computed by mapping the target node embeddings to the source domain using the KTN.
+    Attributes:
+    ----------
+    source_type : str
+        Node type of source domain.
+    target_type : str
+        Node type of target domain.
+    task_type : str
+        Task type of dataset.
+    use_matching_loss : bool
+        Whether to use matching loss.
+    matching_w : nn.ModuleDict
+        trainable transformation matrix for each meta path.
+    matching_path : int
+        meta path for matching loss.  
     """
 
     def __init__(self, args):
+        if not hasattr(args, "use_matching_loss"):
+            args.use_matching_loss = True
+        if not hasattr(args, "feature_name"):
+            args.feature_name = "feat"
+        if not hasattr(args, "task_type"):
+            args.task_type = "L1"
+        if not hasattr(args, "source_type"):
+            args.source_type = "paper"
+        if not hasattr(args, "target_type"):
+            args.target_type = "author"
+        if not hasattr(args, "batch_size"):
+            args.batch_size = 3072
+        if not hasattr(args, "source_train_batch"):
+            args.source_train_batch = 200
+        if not hasattr(args, "source_test_batch"):
+            args.source_test_batch = 50
+        if not hasattr(args, "target_test_batch"):
+            args.target_test_batch = 50
+        if not hasattr(args, "patience"):
+            args.patience = 10
+        if not hasattr(args, "matching_coeff"):
+            args.matching_coeff = 1
+        if not hasattr(args, "mini_batch_flag"):
+            args.mini_batch_flag = False
+        if not hasattr(args,"task_type"):
+            args.task_type = "L1"
         super(KTNTrainer, self).__init__(args)
         self.args = args
-        self.model_name = args.model
+        self.max_epoch = args.max_epoch
         self.device = args.device
-        # self.task = build_task(args)
         self.hg = self.task.get_graph().to(self.device)
-        self.model = (
-            build_model(self.model)
-            .build_model_from_args(self.args, self.hg)
-            .to(self.device)
-        )
         self.source_type = args.source_type
         self.target_type = args.target_type
         self.source_type = args.source_type
@@ -58,14 +98,12 @@ class KTNTrainer(BaseFlow):
         self.use_matching_loss = args.use_matching_loss
         self.classifier = self.task.classifier.to(self.device)
         self.task_type = args.task_type
-        self.mini_batch_flag = args.mini_batch_flag
         self.num_layers = args.num_layers
         self.g = self.dataset.g.to(self.device)
         self.batch_size = args.batch_size
         self.source_train_batch = args.source_train_batch
         self.source_test_batch = args.source_test_batch
         self.target_test_batch = args.target_test_batch
-        self.feature_name = args.feature_name or "feat"
         self.feature = self.dataset.get_feature()
         (
             self.source_train_idx,
@@ -80,10 +118,17 @@ class KTNTrainer(BaseFlow):
         self.source_labels = self.dataset.get_labels(self.task_type, self.source_type)
         self.target_labels = self.dataset.get_labels(self.task_type, self.target_type)
         self.matching_coeff = args.matching_coeff
+        self.args.in_dim = self.feature[self.source_type].shape[1]
+        if not hasattr(self.args, "out_dim"):
+            self.args.out_dim = self.args.hid_dim
+        self.model_name = args.model
+        self.model = (
+            build_model(self.model)
+            .build_model_from_args(self.args, self.hg)
+            .to(self.device)
+        )
         matching_w = {}
         self.label_dim = self.dataset.dims[self.task_type].item()
-        print(self.label_dim)
-        # get target_type-source_type abbreviation, eg: 'paper' 'author' -> 'P-A'
         abbrev = self.target_type[0].upper() + "-" + self.source_type[0].upper()
         self.matching_path = self.dataset.meta_paths_dict[abbrev]
         for matching_id, relation in enumerate(self.matching_path):
@@ -115,18 +160,17 @@ class KTNTrainer(BaseFlow):
                 train_loss, matching_loss = self._full_train_step()
             loss = train_loss + self.matching_coeff * matching_loss
             if epoch % self.evaluate_interval == 0:
-                if self.mini_batch_flag:
+                if self.args.mini_batch_flag:
                     acc = self._mini_test_step()
                 else:
                     acc = self._full_test_step()
-                self.writer.add_scalar("source_ndcg", acc[0], epoch)
-                self.writer.add_scalar("source_mrr", acc[1], epoch)
-                self.writer.add_scalar("target_ndcg", acc[2], epoch)
-                self.writer.add_scalar("target_mrr", acc[3], epoch)
-                self.writer.add_scalar("ktn_ndcg", acc[4], epoch)
-                self.writer.add_scalar("ktn_mrr", acc[5], epoch)
+                self.writer.add_scalar("source_acc", acc[0], epoch)
+                self.writer.add_scalar("target_acc", acc[1], epoch)
+                self.writer.add_scalar("ktn_acc", acc[2], epoch)
                 self.logger.train_info(
-                    f"Epoch {epoch} | Train Loss {train_loss} | Matching Loss {matching_loss} | Source NDCG {acc[0]:.4f} | Source MRR {acc[1]:.4f} | Target NDCG {acc[2]:.4f} | Target MRR {acc[3]:.4f} | KTN NDCG {acc[4]:.4f} | KTN MRR {acc[5]:.4f}"
+                    "Epoch {:d} | Train Loss {:.4f} | Matching Loss {:.4f} | Source Acc {:.4f} | Target Acc {:.4f} | KTN Acc {:.4f}".format(
+                        epoch, train_loss, matching_loss, acc[0], acc[1], acc[2]
+                    )
                 )
                 early_stop = stopper.loss_step(loss, self.model)
                 if early_stop:
@@ -261,7 +305,7 @@ class KTNTrainer(BaseFlow):
             source_acc = self.task.evaluate(source_y, self.source_test_labels)
             target_acc = self.task.evaluate(origin_target_y, self.target_test_labels)
             ktn_acc = self.task.evaluate(ktn_target_y, self.target_test_labels)
-            return source_acc + target_acc + ktn_acc
+            return source_acc, target_acc, ktn_acc
 
     def _mini_test_step(self):
         self.model.eval()
@@ -270,8 +314,7 @@ class KTNTrainer(BaseFlow):
         with torch.no_grad():
             source_loader_tqdm = tqdm(self.source_test_loader, ncols=120)
             # source_loader_tqdm = self.source_test_loader
-            source_ndcg = 0
-            source_mrr = 0
+            source_acc = 0
             source_batch_count = len(self.source_test_loader)
             if source_batch_count > self.source_test_batch:
                 source_batch_count = self.source_test_batch
@@ -286,19 +329,14 @@ class KTNTrainer(BaseFlow):
                 h = self.model(blocks, h)
                 logits = self.classifier(h[self.source_type])
                 acc = self.task.evaluate(logits, lbl)
-                source_ndcg += acc[0]
-                source_mrr += acc[1]
-            source_ndcg = source_ndcg / source_batch_count
-            source_mrr = source_mrr / source_batch_count
+                source_acc += acc
+            source_acc /= source_batch_count
             target_loader_tqdm = tqdm(self.target_test_loader, ncols=120)
             target_batch_count = len(self.target_test_loader)
             if target_batch_count > self.target_test_batch:
                 target_batch_count = self.target_test_batch
-            # target_loader_tqdm = self.target_test_loader
-            target_ndcg = 0
-            target_mrr = 0
-            ktn_ndcg = 0
-            ktn_mrr = 0
+            target_acc = 0
+            ktn_acc = 0
             for i, (input_nodes, seeds, blocks) in enumerate(target_loader_tqdm):
                 if i == self.target_test_batch:
                     break
@@ -310,24 +348,13 @@ class KTNTrainer(BaseFlow):
                 h = self.model(blocks, h)
                 logits = self.classifier(h[self.target_type])
                 origin_acc = self.task.evaluate(logits, lbl)
-                target_ndcg += origin_acc[0]
-                target_mrr += origin_acc[1]
+                target_acc += origin_acc
                 target_h = h[self.target_type]
                 for matching_id, edge in enumerate(self.matching_path):
                     target_h = self.matching_w[str(matching_id) + edge[1]](target_h)
                 ktn_logits = self.classifier(target_h)
-                ktn_acc = self.task.evaluate(ktn_logits, lbl)
-                ktn_ndcg += ktn_acc[0]
-                ktn_mrr += ktn_acc[1]
-            target_ndcg = target_ndcg / target_batch_count
-            target_mrr = target_mrr / target_batch_count
-            ktn_ndcg = ktn_ndcg / target_batch_count
-            ktn_mrr = ktn_mrr / target_batch_count
-            return (
-                source_ndcg,
-                source_mrr,
-                target_ndcg,
-                target_mrr,
-                ktn_ndcg,
-                ktn_mrr,
-            )
+                _ktn_acc = self.task.evaluate(ktn_logits, lbl)
+                ktn_acc += _ktn_acc
+            target_acc /= target_batch_count
+            ktn_acc /= target_batch_count
+            return source_acc, target_acc, ktn_acc
