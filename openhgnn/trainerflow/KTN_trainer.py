@@ -54,7 +54,7 @@ class KTNTrainer(BaseFlow):
     matching_w : nn.ModuleDict
         trainable transformation matrix for each meta path.
     matching_path : int
-        meta path for matching loss.  
+        meta path for matching loss.
     """
 
     def __init__(self, args):
@@ -78,11 +78,12 @@ class KTNTrainer(BaseFlow):
             args.target_test_batch = 50
         if not hasattr(args, "patience"):
             args.patience = 10
+            self.patience = 10
         if not hasattr(args, "matching_coeff"):
             args.matching_coeff = 1
         if not hasattr(args, "mini_batch_flag"):
             args.mini_batch_flag = False
-        if not hasattr(args,"task_type"):
+        if not hasattr(args, "task_type"):
             args.task_type = "L1"
         super(KTNTrainer, self).__init__(args)
         self.args = args
@@ -151,7 +152,7 @@ class KTNTrainer(BaseFlow):
 
     def train(self):
         self.preprocess()
-        stopper = EarlyStopping(self.args.patience)
+        stopper = EarlyStopping(self.patience)
         epoch_iter = tqdm(range(self.max_epoch))
         for epoch in epoch_iter:
             if self.args.mini_batch_flag:
@@ -208,7 +209,6 @@ class KTNTrainer(BaseFlow):
         batch_count = len(self.source_train_loader)
         if batch_count > self.source_train_batch:
             batch_count = self.source_train_batch
-        # loader_tqdm = self.source_train_loader
         all_loss = 0.0
         all_matching_loss = 0.0
         for i, (input_nodes, seeds, blocks) in enumerate(loader_tqdm):
@@ -313,7 +313,6 @@ class KTNTrainer(BaseFlow):
         self.matching_w.eval()
         with torch.no_grad():
             source_loader_tqdm = tqdm(self.source_test_loader, ncols=120)
-            # source_loader_tqdm = self.source_test_loader
             source_acc = 0
             source_batch_count = len(self.source_test_loader)
             if source_batch_count > self.source_test_batch:
