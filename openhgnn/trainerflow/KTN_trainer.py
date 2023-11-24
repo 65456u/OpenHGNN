@@ -32,32 +32,28 @@ def process_category(labels: torch.tensor, num_classes: int) -> torch.tensor:
 @register_flow("KTN_trainer")
 class KTNTrainer(BaseFlow):
     r"""
-    Knowledge Transfer Network (KTN) flow for node classification.
-    <https://arxiv.org/abs/2203.02018>`__
-    The flow is to transfer knowledge from source node type to target node type.
-    Knowledge Transfer Network (KTN) is a zero-shot transfer learning module for heterogeneous graph neural networks (HGNNs).
-    It addresses the challenge of label imbalance in industrial heterogeneous graph (HG) datasets, where labels are abundant for some node types but entirely missing for others.
-    KTN enables knowledge transfer from label-rich to zero-labeled node types within the HG by utilizing the rich relational information available in the graph.
-    KTN operates by transforming the target node type embeddings to align with the source domain distribution.
-    During training, it minimizes both a classification loss and a transfer loss.
-    The transfer loss is computed by mapping the target node embeddings to the source domain using the KTN.
-    Attributes:
-    ----------
-    source_type : str
-        Node type of source domain.
-    target_type : str
-        Node type of target domain.
-    task_type : str
-        Task type of dataset.
-    use_matching_loss : bool
-        Whether to use matching loss.
-    matching_w : nn.ModuleDict
-        trainable transformation matrix for each meta path.
-    matching_path : int
-        meta path for matching loss.
+    Knowledge Transfer Learning flow.
+    `Link to the paper <https://arxiv.org/abs/2203.02018>`__
     """
 
     def __init__(self, args):
+        r"""
+        Attributes:
+        ----------
+        source_type : str
+            Node type of source domain.
+        target_type : str
+            Node type of target domain.
+        task_type : str
+            Task type of dataset.
+        use_matching_loss : bool
+            Whether to use matching loss.
+        matching_w : nn.ModuleDict
+            Trainable transformation matrix for each meta path.
+        matching_path : int
+            Meta path for matching loss.
+
+        """
         if not hasattr(args, "use_matching_loss"):
             args.use_matching_loss = True
         if not hasattr(args, "feature_name"):
